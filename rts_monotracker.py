@@ -17,8 +17,8 @@ EST_CA_SIGMA = 5e-3     # mrad/s²
 SHOW_COVARIANCES = True
 
 # Sim
-dt = 5.0  # Time step (s)
-duration = 20 # Simulation duration (s)
+dt = 0.25  # Time step (s)
+duration = 8 # Simulation duration (s)
 az0 = -1.62  # Initial azimuth (rad)
 el0 = 2.67  # Initial elevation (rad)
 
