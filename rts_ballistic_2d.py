@@ -358,10 +358,7 @@ def plot_tracking_errors(t: np.ndarray, x_true: np.ndarray, x_filtered: np.ndarr
     for idx, i in enumerate([4, 5]):  # X and Y acceleration
         row = (idx + 2) // 2
         col = (idx + 2) % 2
-        if row < 2:  # Only plot if we have space
-            ax = axes[row, col+1] if col == 0 else axes[row+1, col-1]
-        else:
-            ax = axes[1, idx % 2]
+        ax = axes[1, idx % 2]
         
         # Add vertical line to show boost-to-ballistic transition
         ax.axvline(x=BOOST_DURATION, color='orange', linestyle='--', alpha=0.7, 
@@ -466,26 +463,6 @@ def main():
     plot_missile_results(t, x_true, x_filtered, x_smoothed, measurements, P_filtered, P_smoothed)
     plot_tracking_errors(t, x_true, x_filtered, x_smoothed)
     
-    # Print key insights about the boost transition
-    boost_end_idx = int(BOOST_DURATION / dt)
-    print(f"\n" + "="*60)
-    print("KEY INSIGHTS - BOOST TRANSITION ANALYSIS:")
-    print("="*60)
-    print(f"At boost cutoff (t={BOOST_DURATION}s):")
-    
-    # Y acceleration errors at transition
-    y_acc_error_kf = abs(x_filtered[boost_end_idx, 5] - x_true[boost_end_idx, 5]) 
-    y_acc_error_rts = abs(x_smoothed[boost_end_idx, 5] - x_true[boost_end_idx, 5]) 
-    
-    print(f"Y Accel Error - KF: {y_acc_error_kf:.2f} m/s², RTS: {y_acc_error_rts:.2f} m/s²")
-    
-    # Look at lag - find max error in ballistic phase
-    ballistic_mask = t >= BOOST_DURATION
-    max_el_vel_error_kf = np.max(np.abs(x_filtered[ballistic_mask, 3] - x_true[ballistic_mask, 3])) 
-    max_el_vel_error_rts = np.max(np.abs(x_smoothed[ballistic_mask, 3] - x_true[ballistic_mask, 3])) 
-    
-    print(f"Max Y Vel Error (Ballistic) - KF: {max_el_vel_error_kf:.2f} m/s, RTS: {max_el_vel_error_rts:.2f} m/s")
-    print("RTS smoother shows significant improvement by using future measurements!")
 
 if __name__ == "__main__":
     main()
