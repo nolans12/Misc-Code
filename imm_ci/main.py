@@ -9,6 +9,7 @@ from target import Target3D
 from ca import CAFilter
 from cv import CVFilter
 from measurement import Measurement
+from fusion import fuse_ci_series
 
 
 # ======================= CONFIG =======================
@@ -86,6 +87,7 @@ def main():
     x_fwd = np.zeros((steps, 9))
     P_fwd = np.zeros((steps, 9, 9))
     mu_fwd = np.zeros((steps, 2))
+    t_fwd = np.zeros(steps)
     measurements: list[Measurement] = []
 
     for k in range(steps):
@@ -103,7 +105,7 @@ def main():
         x_fwd[k] = out["x_common"][:, 0]
         P_fwd[k] = out["P_common"][:, :]
         mu_fwd[k] = out["mu"]
-
+        t_fwd[k] = meas.t
     # ---------------- Backward IMM ----------------
     ca_back = copy.deepcopy(ca_fwd)
     cv_back = copy.deepcopy(cv_fwd)
@@ -120,28 +122,43 @@ def main():
         t0=measurements[-1].t,
     )
 
+    # Set back pass, but add additional padding on P
+    x_back = np.zeros_like(x_fwd)
+    x_back[0] = x_fwd[-1]
+    P_back = np.zeros_like(P_fwd)
+    P_back[0] = P_fwd[-1] + 0.5 * np.diag([EST_MEAS_SIGMA**2]*3 + [100.0**2]*3 + [50.0**2]*3)
+    mu_back = np.zeros_like(mu_fwd)
+    mu_back[0] = mu_fwd[-1]
+    t_back = np.zeros(steps)
+    t_back[0] = t_fwd[-1]
+    
     # RESET IMM STATE EXPLICITLY
     imm_back.set_state(
         est=x_fwd[-1],  # or a neutral prior (see note below)
         cov=P_fwd[-1],
         mu=mu_fwd[-1],
     )
+    
 
-    x_back = np.zeros_like(x_fwd)
-    mu_back = np.zeros_like(mu_fwd)
-
-    # Run backward over measurements z[K-1] ... z[1] so dt < 0
-    for k, meas in enumerate(measurements[:0:-1]):
-        # skip first meas
+    # Run backward over measurements z[K-1] ... z[0] so dt < 0
+    measurements_backward = measurements.copy()
+    measurements_backward.reverse()
+    for k, meas in enumerate(measurements_backward):
         if k == 0:
             continue
         out = imm_back.step(meas)
+        t_back[k] = meas.t
         x_back[k] = out["x_common"][:, 0]
+        P_back[k] = out["P_common"][:, :]
         mu_back[k] = out["mu"]
 
     # Reverse backward results to forward time
     x_back = x_back[::-1]
+    P_back = P_back[::-1]
     mu_back = mu_back[::-1]
+    t_back = t_back[::-1]
+    # ---------------- Fusion between forward and backward (covariance intersection) ----------------
+    x_fusion, P_fusion, omega_fusion = fuse_ci_series(x_fwd, P_fwd, x_back, P_back)
 
     # ---------------- Plots ----------------
     try:
@@ -150,27 +167,54 @@ def main():
         # Time axis from actual measurement timestamps
         t = np.array([m.t for m in measurements])
 
-        # ---- Altitude ----
-        plt.figure(figsize=(9, 4))
-        plt.plot(t, truth_hist[:, 2], label="Truth")
-        plt.plot(t, x_fwd[:, 2], label="Forward IMM")
-        plt.plot(t, x_back[:, 2], "--", label="Backward IMM")
-        plt.axvline(BOOST_END_TIME, linestyle="--", color="k")
-        plt.xlabel("Time (s)")
-        plt.ylabel("Altitude (m)")
-        plt.legend()
-        plt.grid()
+        # ---- Velocity components (vx, vy, vz) in 3x1 subplots ----
+        fig_vel, axs_vel = plt.subplots(3, 1, figsize=(9, 8), sharex=True)
+        vel_labels = ["$v_x$ (m/s)", "$v_y$ (m/s)", "$v_z$ (m/s)"]
+        for i in range(3):
+            axs_vel[i].plot(t, truth_hist[:, 3 + i], label="Truth")
+            axs_vel[i].plot(t, x_fwd[:, 3 + i], label="Forward IMM")
+            axs_vel[i].plot(t, x_back[:, 3 + i], "--", label="Backward IMM")
+            axs_vel[i].plot(t, x_fusion[:, 3 + i], ":", label="Fusion")
+            axs_vel[i].axvline(BOOST_END_TIME, linestyle="--", color="k")
+            axs_vel[i].set_ylabel(vel_labels[i])
+            axs_vel[i].grid(True)
+        axs_vel[0].legend()
+        axs_vel[-1].set_xlabel("Time (s)")
+        fig_vel.tight_layout()
 
-        # ---- Velocity magnitude ----
-        plt.figure(figsize=(9, 4))
-        plt.plot(t, np.linalg.norm(truth_hist[:, 3:6], axis=1), label="Truth")
-        plt.plot(t, np.linalg.norm(x_fwd[:, 3:6], axis=1), label="Forward IMM")
-        plt.plot(t, np.linalg.norm(x_back[:, 3:6], axis=1), "--", label="Backward IMM")
-        plt.axvline(BOOST_END_TIME, linestyle="--", color="k")
-        plt.xlabel("Time (s)")
-        plt.ylabel("|v| (m/s)")
-        plt.legend()
-        plt.grid()
+        # ---- Altitude, |v|, and |a| in 3x1 subplots ----
+        fig_kin, axs_kin = plt.subplots(3, 1, figsize=(9, 8), sharex=True)
+
+        # Altitude
+        axs_kin[0].plot(t, truth_hist[:, 2], label="Truth")
+        axs_kin[0].plot(t, x_fwd[:, 2], label="Forward IMM")
+        axs_kin[0].plot(t, x_back[:, 2], "--", label="Backward IMM")
+        axs_kin[0].plot(t, x_fusion[:, 2], ":", label="Fusion")
+        axs_kin[0].axvline(BOOST_END_TIME, linestyle="--", color="k")
+        axs_kin[0].set_ylabel("Altitude (m)")
+        axs_kin[0].grid(True)
+        axs_kin[0].legend()
+
+        # Velocity magnitude
+        axs_kin[1].plot(t, np.linalg.norm(truth_hist[:, 3:6], axis=1), label="Truth")
+        axs_kin[1].plot(t, np.linalg.norm(x_fwd[:, 3:6], axis=1), label="Forward IMM")
+        axs_kin[1].plot(t, np.linalg.norm(x_back[:, 3:6], axis=1), "--", label="Backward IMM")
+        axs_kin[1].plot(t, np.linalg.norm(x_fusion[:, 3:6], axis=1), ":", label="Fusion")
+        axs_kin[1].axvline(BOOST_END_TIME, linestyle="--", color="k")
+        axs_kin[1].set_ylabel("|v| (m/s)")
+        axs_kin[1].grid(True)
+
+        # Acceleration magnitude
+        axs_kin[2].plot(t, np.linalg.norm(truth_hist[:, 6:9], axis=1), label="Truth")
+        axs_kin[2].plot(t, np.linalg.norm(x_fwd[:, 6:9], axis=1), label="Forward IMM")
+        axs_kin[2].plot(t, np.linalg.norm(x_back[:, 6:9], axis=1), "--", label="Backward IMM")
+        axs_kin[2].plot(t, np.linalg.norm(x_fusion[:, 6:9], axis=1), ":", label="Fusion")
+        axs_kin[2].axvline(BOOST_END_TIME, linestyle="--", color="k")
+        axs_kin[2].set_ylabel("|a| (m/s$^2$)")
+        axs_kin[2].grid(True)
+        axs_kin[2].set_xlabel("Time (s)")
+
+        fig_kin.tight_layout()
 
         # ---- Mode probabilities ----
         plt.figure(figsize=(9, 4))

@@ -132,7 +132,7 @@ class IMM:
             if hasattr(model, "R"):
                 model.R = meas.R
 
-            print(f"Predicting model {j} at time {self.time} with dt {dt}")
+            # print(f"Predicting model {j} at time {self.time} with dt {dt}")
             # Variable-dt prediction (dt can be negative for backward pass)
             model.predict(dt)
             y, S = model.innovation(z)
