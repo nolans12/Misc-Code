@@ -17,19 +17,21 @@ class Target3D:
     def __init__(
         self,
         dt: float,
-        boost_end_time: float,
+        FIRST_ACCEL: float,
+        SECOND_ACCEL: float,
         g: float = 9.80665,
         accel_boost_g: float = 5.0,
         process_sigma_acc: float = 0.0,
         seed: int | None = None,
     ):
         self.dt = float(dt)
-        self.boost_end_time = float(boost_end_time)
+        self.first_accel = float(FIRST_ACCEL)
+        self.second_accel = float(SECOND_ACCEL)
         self.g = float(g)
         self.accel_boost = float(accel_boost_g) * self.g  # +Z acceleration during boost (net)
         self.process_sigma_acc = float(process_sigma_acc)
 
-        self.rng = np.random.default_rng(seed)
+        self.rng = np.random.default_rng(50)
         self.t = 0.0
 
         # truth state (9x1)
@@ -52,10 +54,12 @@ class Target3D:
         Returns acceleration vector [ax, ay, az] for current time self.t.
         """
         ax, ay = 0.0, 0.0
-        if self.t < self.boost_end_time:
-            az = self.accel_boost  # net upward +5g
+        if self.t < self.first_accel:
+            az = self.accel_boost
+        elif self.t > self.second_accel:
+            az = -self.accel_boost
         else:
-            az = -self.g  # ballistic
+            az = 0 # or ballistic -self.g
         return np.array([ax, ay, az], dtype=float)
 
     def step(self) -> np.ndarray:
