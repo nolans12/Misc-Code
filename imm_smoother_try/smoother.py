@@ -23,7 +23,7 @@ class IMMSmootherRTS:
         self.PI = np.asarray(PI, dtype=float)
         self.eps = eps
 
-    def smooth(self, imm, measurements):
+    def smooth(self, imm):
         hist = imm._history
         K = len(hist)
         M = len(hist[0]["models"])
@@ -55,6 +55,10 @@ class IMMSmootherRTS:
         # Backward recursion
         # ==========================================================
         for k in range(K-2, -1, -1):
+
+            # print(k)
+            # print(f"time: {hist[k]['time']}")
+
             mu_f = hist[k]["mu"]
             mu_next = mu_s[k+1]
 
@@ -62,10 +66,15 @@ class IMMSmootherRTS:
             c = mu_f @ self.PI # this should be forward pass
             c = np.maximum(c, self.eps)
 
+            # print(f"curr_p_mode: {c}")
+            # print(f"pred_p_trans: {self.PI}")
+
             b = np.zeros((M, M))
             for i in range(M):
                 for j in range(M):
                     b[i, j] = self.PI[j, i] * mu_f[j] / c[i]
+
+            # print(f"backward_trans_prob: {b}")
 
             # ---------- backward mixing ----------
             d = b.T @ mu_next
@@ -76,12 +85,15 @@ class IMMSmootherRTS:
                 for i in range(M):
                     mu_mix[i, j] = b[i, j] * mu_next[i] / d[j]
 
+            # print(f"backward_mixing: {mu_mix}")
+
             # ---------- mix smoothed states (COMMON space) ----------
             x0 = [np.zeros((common_dim, 1)) for _ in range(M)]
             P0 = [np.zeros((common_dim, common_dim)) for _ in range(M)]
 
             for j in range(M):
                 for i in range(M):
+                    # print(f"xi_c: {i}: {x_mode[k + 1][i]}")
                     xi_c, Pi_c = imm.models[i].to_common(
                         x_mode[k+1][i], P_mode[k+1][i]
                     )
@@ -93,6 +105,9 @@ class IMMSmootherRTS:
                     )
                     dx = xi_c - x0[j]
                     P0[j] += mu_mix[i, j] * (Pi_c + dx @ dx.T)
+                # print(f"mixed_estimate.state: {x0[j]}")
+                # print(f"mixed_estimate.covariance: {P0[j]}")
+                # print(f"mixed_estimate.covariance determinate: {np.linalg.det(P0[j])}")
 
             # ---------- RTS per model (INTERNAL space) ----------
             for j, model in enumerate(imm.models):
@@ -118,6 +133,7 @@ class IMMSmootherRTS:
                 x_mode[k][j] = x_s
                 P_mode[k][j] = sym(P_s)
 
+                # print(f"smooth_snapshot.filter_data.state: {x_s}")
             # ---------- smoothed mode probabilities ----------
 
             # USE INTERNAL
@@ -133,11 +149,17 @@ class IMMSmootherRTS:
                         x_mode[k+1][i], P_mode[k+1][i]
                     )
                     y = xi_c - x_pred_c
+                    # print(f"y: {y}")
                     val += self.PI[j, i] * self._gauss(y[0:6], P_pred_c[0:6,0:6])
+                    # print(f"value iter: {self.PI[j, i] * self._gauss(y[0:6], P_pred_c[0:6,0:6])}")
                 Lambda[j] = max(val, self.eps)
 
+            # print(f"smoothed_likelihoods: {Lambda}")
             mu_tmp = Lambda * mu_f
             mu_s[k] = mu_tmp / np.sum(mu_tmp)
+            print(f"at time: {hist[k]['time']:.1f}\n"
+                  f"forward p modes: {c}\n"
+                  f"smoothed p modes: {mu_s[k]}\n")
 
             # ---------- moment match ----------
             x_common[k], P_common[k] = self._moment_match(

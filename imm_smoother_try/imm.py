@@ -35,8 +35,6 @@ class IMM:
         PI: np.ndarray,
         mu0: np.ndarray,
         dt: float,
-        time_weighted_likelihood: bool = False,
-        likelihood_tau: float = 1.0,
         t0: float = 0.0,
     ):
         """
@@ -68,9 +66,6 @@ class IMM:
         self.PI = fractional_matrix_power(self.PI, self.dt)
 
         self._history = []  # stores forward pass snapshots
-
-        self.time_weighted_likelihood = time_weighted_likelihood
-        self.likelihood_tau = likelihood_tau
 
         if self.PI.shape != (self.M, self.M):
             raise ValueError("PI must be MxM")
@@ -153,11 +148,6 @@ class IMM:
                 y, S = model.innovation(z)
                 model.update(z)
                 likelihoods[j] = gaussian_likelihood(y, S)
-
-            # ---- Update model probabilities ----
-            if self.time_weighted_likelihood:
-                alpha = abs(dt) / self.likelihood_tau
-                likelihoods = likelihoods ** alpha
 
             mu_new = likelihoods * c
             mu_sum = mu_new.sum()

@@ -2,8 +2,6 @@
 from __future__ import annotations
 import numpy as np
 
-from imm import gaussian_likelihood
-
 
 def sym(P):
     return 0.5 * (P + P.T)
@@ -25,7 +23,7 @@ class IMMSmootherRTS:
         self.PI = np.asarray(PI, dtype=float)
         self.eps = eps
 
-    def smooth(self, imm, measurements):
+    def smooth(self, imm):
         hist = imm._history
         K = len(hist)
         M = len(hist[0]["models"])
@@ -57,6 +55,9 @@ class IMMSmootherRTS:
         # Backward recursion
         # ==========================================================
         for k in range(K-2, -1, -1):
+
+            time = hist[k]["time"]
+
             mu_f = hist[k]["mu"]
             mu_next = mu_s[k+1]
 
@@ -64,10 +65,15 @@ class IMMSmootherRTS:
             c = mu_f @ self.PI # this should be forward pass
             c = np.maximum(c, self.eps)
 
+            # print(f"curr_p_mode: {c}")
+            # print(f"pred_p_trans: {self.PI}")
+
             b = np.zeros((M, M))
             for i in range(M):
                 for j in range(M):
                     b[i, j] = self.PI[j, i] * mu_f[j] / c[i]
+
+            # print(f"backward_trans_prob: {b}")
 
             # ---------- backward mixing ----------
             d = b.T @ mu_next
@@ -78,12 +84,15 @@ class IMMSmootherRTS:
                 for i in range(M):
                     mu_mix[i, j] = b[i, j] * mu_next[i] / d[j]
 
+            # print(f"backward_mixing: {mu_mix}")
+
             # ---------- mix smoothed states (COMMON space) ----------
             x0 = [np.zeros((common_dim, 1)) for _ in range(M)]
             P0 = [np.zeros((common_dim, common_dim)) for _ in range(M)]
 
             for j in range(M):
                 for i in range(M):
+                    # print(f"xi_c: {i}: {x_mode[k + 1][i]}")
                     xi_c, Pi_c = imm.models[i].to_common(
                         x_mode[k+1][i], P_mode[k+1][i]
                     )
@@ -95,6 +104,10 @@ class IMMSmootherRTS:
                     )
                     dx = xi_c - x0[j]
                     P0[j] += mu_mix[i, j] * (Pi_c + dx @ dx.T)
+                    
+                # print(f"mixed_estimate.state: {x0[j]}")
+                # print(f"mixed_estimate.covariance: {P0[j]}")
+                # print(f"mixed_estimate.covariance determinate: {np.linalg.det(P0[j])}")
 
             # ---------- RTS per model (INTERNAL space) ----------
             for j, model in enumerate(imm.models):
@@ -120,29 +133,126 @@ class IMMSmootherRTS:
                 x_mode[k][j] = x_s
                 P_mode[k][j] = sym(P_s)
 
+                # print(f"smooth_snapshot.filter_data.state: {x_s}")
+                
             # ---------- smoothed mode probabilities ----------
-            # Compute likelihoods in the measurement frame using the
-            # smoothed mode states x_mode[k], P_mode[k] and each model's
-            # measurement matrix H, analogous to the forward IMM pass.
-            meas_k = measurements[k]
-            z = meas_k.z.reshape(-1, 1)
-            R = meas_k.R
 
-            Lambda = np.zeros(M)
-            for j, model in enumerate(imm.models):
-                xj = x_mode[k][j]
-                Pj = P_mode[k][j]
+            # DEFAULT FROM PAPER
+            # Lambda = np.zeros(M)
+            # for j in range(M):
+            #     val = 0.0
+            #     x_pred_c, P_pred_c = imm.models[j].to_common(
+            #         hist[k+1]["models"][j]["x_pred"],
+            #         hist[k+1]["models"][j]["P_pred"],
+            #     )
+            #     for i in range(M):
+            #         xi_c, _ = imm.models[i].to_common(
+            #             x_mode[k+1][i], P_mode[k+1][i]
+            #         )
+            #         y = xi_c - x_pred_c
+            #         # print(f"y: {y}")
+            #         val += self.PI[j, i] * self._gauss(y[0:6], P_pred_c[0:6,0:6])
+            #         print(f"value iter: {self.PI[j, i] * self._gauss(y[0:6], P_pred_c[0:6,0:6])}")
+            #     Lambda[j] = max(val, self.eps)
+            # print(f"smoothed_likelihoods: {Lambda}")
+            # mu_tmp = Lambda * mu_f
+            # mu_s[k] = mu_tmp / np.sum(mu_tmp)
+            
+            
+            # WITH JUST B
+            mu_s[k] = b.T @ mu_s[k+1]
+            mu_s[k] = np.maximum(mu_s[k], self.eps)
+            mu_s[k] /= np.sum(mu_s[k])
 
-                H = model.H
-                z_hat = H @ xj
-                S = H @ Pj @ H.T + R
-                y = z - z_hat
 
-                L = gaussian_likelihood(y, S)
-                Lambda[j] = max(L, self.eps)
+            # # BETA THING
+            # beta = 0.2  # 0.1–0.3 works well
+            # Lambda = np.zeros(M)
+            # for j in range(M):
+            #     x_pred = hist[k+1]["models"][j]["x_pred"]
+            #     P_pred = hist[k+1]["models"][j]["P_pred"]
 
-            mu_tmp = Lambda * mu_f
-            mu_s[k] = mu_tmp / np.sum(mu_tmp)
+            #     # common subspace: pos + vel (0:6)
+            #     x_pred_c, P_pred_c = imm.models[j].to_common(x_pred, P_pred)
+            #     x_pred_c = x_pred_c[0:6]
+            #     P_pred_c = P_pred_c[0:6, 0:6]
+
+            #     val = 0.0
+            #     for i in range(M):
+            #         xi_c, _ = imm.models[i].to_common(
+            #             x_mode[k+1][i], P_mode[k+1][i]
+            #         )
+            #         y = xi_c[0:6] - x_pred_c
+            #         logL = np.log(self._gauss(y, P_pred_c) + self.eps)
+            #         val += self.PI[j, i] * np.exp(beta * logL)
+
+            #     Lambda[j] = max(val, self.eps)
+
+            # mu_tmp = Lambda * mu_f
+            # mu_s[k] = mu_tmp / np.sum(mu_tmp)
+            
+            # # ---------- smoothed mode probabilities (BLOCK B: log + clip) ----------
+
+            # LOG_FLOOR = -50.0
+            # Lambda = np.zeros(M)
+
+            # for j in range(M):
+            #     x_pred = hist[k+1]["models"][j]["x_pred"]
+            #     P_pred = hist[k+1]["models"][j]["P_pred"]
+
+            #     x_pred_c, P_pred_c = imm.models[j].to_common(x_pred, P_pred)
+            #     x_pred_c = x_pred_c[0:6]
+            #     P_pred_c = P_pred_c[0:6, 0:6]
+
+            #     logs = []
+            #     for i in range(M):
+            #         xi_c, _ = imm.models[i].to_common(
+            #             x_mode[k+1][i], P_mode[k+1][i]
+            #         )
+            #         y = xi_c[0:6] - x_pred_c
+            #         logL = np.log(self._gauss(y, P_pred_c) + self.eps)
+            #         logL = max(logL, LOG_FLOOR)
+            #         logs.append(np.log(self.PI[j, i] + self.eps) + logL)
+
+            #     logs = np.array(logs)
+            #     # logs -= np.max(logs)  # stabilize
+            #     Lambda[j] = np.sum(np.exp(logs))
+
+            # mu_tmp = Lambda * mu_f
+            # mu_s[k] = mu_tmp / np.sum(mu_tmp)
+
+            # # ---------- smoothed mode probabilities (BLOCK C: Mahalanobis gating) ----------
+
+            # gamma = 6.0  # dimension = 6
+            # Lambda = np.zeros(M)
+
+            # for j in range(M):
+            #     x_pred = hist[k+1]["models"][j]["x_pred"]
+            #     P_pred = hist[k+1]["models"][j]["P_pred"]
+
+            #     x_pred_c, P_pred_c = imm.models[j].to_common(x_pred, P_pred)
+            #     x_pred_c = x_pred_c[0:6]
+            #     P_pred_c = P_pred_c[0:6, 0:6]
+
+            #     val = 0.0
+            #     for i in range(M):
+            #         xi_c, _ = imm.models[i].to_common(
+            #             x_mode[k+1][i], P_mode[k+1][i]
+            #         )
+            #         y = xi_c[0:6] - x_pred_c
+            #         d2 = y.T @ np.linalg.solve(P_pred_c, y)
+            #         val += self.PI[j, i] * np.exp(-0.5 * d2 / gamma)
+
+            #     Lambda[j] = max(val, self.eps)
+
+            # mu_tmp = Lambda * mu_f
+            # mu_s[k] = mu_tmp / np.sum(mu_tmp)
+
+            
+
+            print(f"at time: {hist[k]['time']:.1f}\n"
+                  f"forward p modes: {c}\n"
+                  f"smoothed p modes: {mu_s[k]}\n")
 
             # ---------- moment match ----------
             x_common[k], P_common[k] = self._moment_match(
