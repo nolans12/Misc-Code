@@ -5,8 +5,9 @@ import numpy as np
 from scipy.linalg import fractional_matrix_power
 
 from imm import IMM
-from target import Motion, Target3D
+from target import Target3D
 from ca import CAFilter
+from cv import CVFilter
 from measurement import Measurement
 from smoother import IMMSmootherRTS
 
@@ -14,19 +15,20 @@ from smoother import IMMSmootherRTS
 
 IMM_SMOOTHER = True
 
-TOTAL_TIME = 30.0
+TOTAL_TIME = 15
+FIRST_ACCEL = 5.0
+SECOND_ACCEL = 10.0
 DT = 0.1
 
-MOTIONS = [
-    Motion(start_t=0.0, end_t=15, accel=5, noise_sigma=10),
-    Motion(start_t=15, end_t=30, accel=5.0, noise_sigma=1),
-]
+CA_SIGMA = 10.0
+CV_SIGMA = 10.0
+MIXING_SIGMA = CA_SIGMA * 0
 
-CA_1_SIGMA = 1.0
-CA_2_SIGMA = 10.0
-
-EST_MEAS_SIGMA = 15.0
+EST_MEAS_SIGMA = 25.0
 TRUE_MEAS_SIGMA = 5.0
+
+TARG_GS = 5.0
+TARG_SIGMA = 1.0
 
 # =====================================================
 
@@ -45,46 +47,55 @@ def plot_with_sigma(ax, t, mean, P, idx, label, color, linestyle="-", alpha=0.25
 
 def main():
     steps = int(TOTAL_TIME / DT) + 1
-    
-    
-    # INITIAL EVERYTHING
 
-    # ---------------- Target ----------------
+    # ---------------- Truth target ----------------
     target = Target3D(
-        motions=MOTIONS,
+        dt=DT,
+        FIRST_ACCEL=FIRST_ACCEL,
+        SECOND_ACCEL=SECOND_ACCEL,
+        g=9.80665,
+        accel_boost_g=TARG_GS,
+        process_sigma_acc=TARG_SIGMA,
+        seed=100,
     )
     target.set_initial(
         pos_xyz=np.array([0.0, 0.0, 0.0]),
-        vel_xyz=np.array([100.0, -50.0, 0.0]),
+        vel_xyz=np.array([100.0, 100.0, 0.0]),
     )
 
     # ---------------- IMM parameters ----------------
     PI = np.array([[0.99, 0.01],
                    [0.01, 0.99]])
-
-    mu0 = np.array([0.50, 0.50])
+    
+    mu0 = np.array([0.99, 0.01])
     R_est = EST_MEAS_SIGMA ** 2 * np.eye(3)
     R_true = TRUE_MEAS_SIGMA ** 2 * np.eye(3)
-    
+
     # First measurement at t=0 for initialization only
     z0 = target.measure_position(R_true)
-    
-     # ---------------- Initial states ----------------
+
+    # ---------------- Initial states ----------------
     x0_ca = np.zeros((9, 1))
     x0_ca[0:3, 0] = z0
-    x0_ca[3:6, 0] = [120.0, -52.0, 2.0]
-    P0_ca_1 = np.diag([EST_MEAS_SIGMA ** 2] * 3 + [25.0 ** 2] * 3 + [CA_1_SIGMA ** 2] * 3)
-    P0_ca_2 = np.diag([EST_MEAS_SIGMA ** 2] * 3 + [25.0 ** 2] * 3 + [CA_1_SIGMA ** 2] * 3)
+    x0_ca[3:6, 0] = [120.0, 120.0, 15.0]
+    x0_ca[6:9, 0] = [-55.0, -20.0, 45.0]
+    P0_ca = np.diag([EST_MEAS_SIGMA ** 2] * 3 + [CV_SIGMA ** 2] * 3 + [CA_SIGMA ** 2] * 3)
+
+    x0_cv = np.zeros((6, 1))
+    x0_cv[0:3, 0] = z0
+    x0_cv[3:6, 0] = [120.0, 120.0, 15.0]
+    P0_cv = np.diag([EST_MEAS_SIGMA ** 2] * 3 + [CV_SIGMA ** 2] * 3)
 
     # ---------------- Forward IMM ----------------
-    ca_1 = CAFilter(DT, CA_1_SIGMA, R_est, x0_ca, P0_ca_1)
-    ca_2 = CAFilter(DT, CA_2_SIGMA, R_est, x0_ca, P0_ca_2)
+    ca_fwd = CAFilter(DT, CA_SIGMA, R_est, x0_ca, P0_ca)
+    cv_fwd = CVFilter(DT, CV_SIGMA, R_est, x0_cv, P0_cv, embed_sigma=MIXING_SIGMA)
 
     imm_fwd = IMM(
-        models=[ca_1, ca_2],
+        models=[ca_fwd, cv_fwd],
         PI=PI,
         mu0=mu0,
         dt=DT,
+        time_weighted_likelihood=False,
     )
 
     truth_hist = np.zeros((steps, 9))
@@ -109,7 +120,7 @@ def main():
         if k == 0:
             continue
 
-        truth = target.step(DT)
+        truth = target.step()
         z_true = target.measure_position(R_true)
         meas = Measurement(t=target.t, z=z_true, R=R_est)
         measurements.append(meas)
@@ -169,9 +180,8 @@ def main():
 
             axs_pos[i].set_ylabel(labels_pos[i])
             axs_pos[i].grid(True)
-            for motion in MOTIONS:
-                axs_pos[i].axvline(motion.start_t, linestyle="--", color="k")
-                axs_pos[i].axvline(motion.end_t, linestyle="--", color="k")
+            axs_pos[i].axvline(FIRST_ACCEL, linestyle="--", color="k")
+            axs_pos[i].axvline(SECOND_ACCEL, linestyle="--", color="k")
 
         axs_pos[0].legend()
         axs_pos[-1].set_xlabel("Time (s)")
@@ -198,9 +208,8 @@ def main():
 
             axs_vel[i].set_ylabel(labels_vel[i])
             axs_vel[i].grid(True)
-            for motion in MOTIONS:
-                axs_vel[i].axvline(motion.start_t, linestyle="--", color="k")
-                axs_vel[i].axvline(motion.end_t, linestyle="--", color="k")
+            axs_vel[i].axvline(FIRST_ACCEL, linestyle="--", color="k")
+            axs_vel[i].axvline(SECOND_ACCEL, linestyle="--", color="k")
 
         axs_vel[0].legend()
         axs_vel[-1].set_xlabel("Time (s)")
@@ -227,9 +236,8 @@ def main():
 
             axs_acc[i].set_ylabel(labels_acc[i])
             axs_acc[i].grid(True)
-            for motion in MOTIONS:
-                axs_acc[i].axvline(motion.start_t, linestyle="--", color="k")
-                axs_acc[i].axvline(motion.end_t, linestyle="--", color="k")
+            axs_acc[i].axvline(FIRST_ACCEL, linestyle="--", color="k")
+            axs_acc[i].axvline(SECOND_ACCEL, linestyle="--", color="k")
 
         axs_acc[0].legend()
         axs_acc[-1].set_xlabel("Time (s)")
@@ -237,14 +245,13 @@ def main():
 
         # ---- Mode probabilities ----
         plt.figure(figsize=(9, 4))
-        plt.plot(t, mu_fwd[:, 0], label="P(CA_1) forward")
-        plt.plot(t, mu_fwd[:, 1], label="P(CA_2) forward")
+        plt.plot(t, mu_fwd[:, 0], label="P(CA) forward")
+        plt.plot(t, mu_fwd[:, 1], label="P(CV) forward")
         if IMM_SMOOTHER:
-            plt.plot(t, mu_smooth[:, 0], "--", label="P(CA_1) smooth")
-            plt.plot(t, mu_smooth[:, 1], "--", label="P(CA_2) smooth")
-        for motion in MOTIONS:
-            plt.axvline(motion.start_t, linestyle="--", color="k")
-            plt.axvline(motion.end_t, linestyle="--", color="k")
+            plt.plot(t, mu_smooth[:, 0], "--", label="P(CA) smooth")
+            plt.plot(t, mu_smooth[:, 1], "--", label="P(CV) smooth")
+        plt.axvline(FIRST_ACCEL, linestyle="--", color="k")
+        plt.axvline(SECOND_ACCEL, linestyle="--", color="k")
         plt.xlabel("Time (s)")
         plt.ylabel("Mode probability")
         plt.legend()
@@ -255,16 +262,17 @@ def main():
     except Exception as e:
         print("Plot skipped:", e)
 
-    # # At the end print all measuremnet times and states
-    # for meas in measurements:
-    #     t = float(meas.t)
-    #     z = meas.z  # length-3
-    #     print(
-    #         f'vector.push_back(make_meas('
-    #         f'{t:.6f}, '
-    #         f'(Eigen::VectorXd(3) << {z[0]:.6f}, {z[1]:.6f}, {z[2]:.6f}).finished(), '
-    #         f'noise_sigma));'
-    #     )
+    
+    # At the end print all measuremnet times and states
+    for meas in measurements:
+        t = float(meas.t)
+        z = meas.z  # length-3
+        print(
+            f'vector.push_back(make_meas('
+            f'{t:.6f}, '
+            f'(Eigen::VectorXd(3) << {z[0]:.6f}, {z[1]:.6f}, {z[2]:.6f}).finished(), '
+            f'noise_sigma));'
+        )
 
 
 if __name__ == "__main__":

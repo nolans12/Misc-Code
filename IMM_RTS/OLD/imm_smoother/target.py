@@ -4,22 +4,6 @@ from __future__ import annotations
 import numpy as np
 
 
-class Motion:
-    """
-    Accel motion
-    Args:
-        start_t: Start time of the motion.
-        end_t: End time of the motion.
-        accel: Acceleration of the motion.
-        noise_sigma: Noise sigma of the motion.
-    """
-    def __init__(self, start_t, end_t, accel, noise_sigma):
-        self.start_t = start_t
-        self.end_t = end_t
-        self.accel = accel * np.array([1, -1, 1], dtype=float)
-        self.noise_sigma = noise_sigma
-        self.rng = np.random.default_rng(1)
-
 class Target3D:
     """
     Simple 3D target simulator:
@@ -32,12 +16,26 @@ class Target3D:
 
     def __init__(
         self,
-        motions: list[Motion],
+        dt: float,
+        FIRST_ACCEL: float,
+        SECOND_ACCEL: float,
+        g: float = 9.80665,
+        accel_boost_g: float = 5.0,
+        process_sigma_acc: float = 0.0,
+        seed: int | None = None,
     ):
-        self.t = 0.0
-        self.motions = motions
-        self.x = np.zeros((9, 1), dtype=float)
+        self.dt = float(dt)
+        self.first_accel = float(FIRST_ACCEL)
+        self.second_accel = float(SECOND_ACCEL)
+        self.g = float(g)
+        self.accel_boost = float(accel_boost_g) * self.g  # +Z acceleration during boost (net)
+        self.process_sigma_acc = float(process_sigma_acc)
+
         self.rng = np.random.default_rng(1)
+        self.t = 0.0
+
+        # truth state (9x1)
+        self.x = np.zeros((9, 1), dtype=float)
 
     def set_initial(
         self,
@@ -55,35 +53,45 @@ class Target3D:
     def _truth_accel(self) -> np.ndarray:
         """
         Returns acceleration vector [ax, ay, az] for current time self.t.
-        If current time is within the start and end time of any motion, use that acceleration; else, [0, 0, 0].
         """
-        for motion in self.motions:
-            if motion.start_t <= self.t < motion.end_t:
-                return np.array(motion.accel, dtype=float) + motion.noise_sigma * self.rng.normal(size=3)
-        return np.zeros(3, dtype=float)
+        if self.t < self.first_accel:
+            ax = -self.accel_boost
+            ay = -0.5*self.accel_boost
+            az = self.accel_boost
+        elif self.t > self.second_accel:
+            ax = self.accel_boost
+            ay = 0.5*self.accel_boost
+            az = -self.accel_boost
+        else:
+            ax, ay, az = 0, 0, 0 
+        return np.array([ax, ay, az], dtype=float)
 
-    def step(self, dt: float) -> np.ndarray:
+    def step(self) -> np.ndarray:
         """
         Advance truth by one time step using constant acceleration over dt.
         Adds optional accel noise (process_sigma_acc) to mimic modeling error.
         Returns new truth state (9x1).
         """
+        dt = self.dt
 
-        # dt time step
-        self.t += dt
+        a = self._truth_accel()
+        if self.process_sigma_acc > 0:
+            a = a + self.rng.normal(0.0, self.process_sigma_acc, size=3)
+
+        # Write accel into truth state (CA truth)
+        self.x[6:9, 0] = a
 
         # Kinematics
         p = self.x[0:3, 0]
         v = self.x[3:6, 0]
-        a = self._truth_accel()
 
         p_new = p + v * dt + 0.5 * a * dt * dt
         v_new = v + a * dt
 
         self.x[0:3, 0] = p_new
         self.x[3:6, 0] = v_new
-        self.x[6:9, 0] = a 
 
+        self.t += dt
         return self.x.copy()
 
     def measure_position(self, R: np.ndarray) -> np.ndarray:

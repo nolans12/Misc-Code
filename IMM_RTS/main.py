@@ -1,37 +1,33 @@
-# main.py
-from __future__ import annotations
+from types import MethodType
 
 import numpy as np
-from scipy.linalg import fractional_matrix_power
-
 from imm import IMM
-from target import Target3D
-from ca import CAFilter
-from cv import CVFilter
+from models import make_ca_3d, make_cv_3d, to_common_ca, to_internal_ca, to_common_cv, to_internal_cv
 from measurement import Measurement
+from target import Target3D
 from smoother import IMMSmootherRTS
+
 
 # ======================= CONFIG =======================
 
 IMM_SMOOTHER = True
 
-TOTAL_TIME = 15
-FIRST_ACCEL = 5.0
-SECOND_ACCEL = 10.0
-DT = 0.1
+TOTAL_TIME = 60.0
+FIRST_ACCEL = 20.0
+SECOND_ACCEL = 40.0
+DT = 1.0
 
 CA_SIGMA = 10.0
 CV_SIGMA = 10.0
 MIXING_SIGMA = CA_SIGMA * 0
 
-EST_MEAS_SIGMA = 25.0
+EST_MEAS_SIGMA = 15.0
 TRUE_MEAS_SIGMA = 5.0
 
 TARG_GS = 5.0
 TARG_SIGMA = 1.0
 
 # =====================================================
-
 
 def plot_with_sigma(ax, t, mean, P, idx, label, color, linestyle="-", alpha=0.25):
     sigma = np.sqrt(P[:, idx, idx])
@@ -44,9 +40,7 @@ def plot_with_sigma(ax, t, mean, P, idx, label, color, linestyle="-", alpha=0.25
         alpha=alpha,
     )
 
-
 def main():
-    steps = int(TOTAL_TIME / DT) + 1
 
     # ---------------- Truth target ----------------
     target = Target3D(
@@ -63,41 +57,46 @@ def main():
         vel_xyz=np.array([100.0, 100.0, 0.0]),
     )
 
-    # ---------------- IMM parameters ----------------
-    PI = np.array([[0.99, 0.01],
-                   [0.01, 0.99]])
-    
-    mu0 = np.array([0.99, 0.01])
-    R_est = EST_MEAS_SIGMA ** 2 * np.eye(3)
-    R_true = TRUE_MEAS_SIGMA ** 2 * np.eye(3)
+    R = np.diag([EST_MEAS_SIGMA ** 2, EST_MEAS_SIGMA ** 2, EST_MEAS_SIGMA ** 2])
+    R_true = np.diag([TRUE_MEAS_SIGMA ** 2, TRUE_MEAS_SIGMA ** 2, TRUE_MEAS_SIGMA ** 2])
 
-    # First measurement at t=0 for initialization only
-    z0 = target.measure_position(R_true)
+    ca = make_ca_3d(DT, CA_SIGMA, R)
+    ca.to_common = MethodType(to_common_ca, ca)
+    ca.to_internal = MethodType(to_internal_ca, ca)
+    cv = make_cv_3d(DT, CV_SIGMA, R)
+    cv.to_common = MethodType(to_common_cv, cv)
+    cv.to_internal = MethodType(to_internal_cv, cv)
 
-    # ---------------- Initial states ----------------
-    x0_ca = np.zeros((9, 1))
-    x0_ca[0:3, 0] = z0
-    x0_ca[3:6, 0] = [120.0, 120.0, 15.0]
-    x0_ca[6:9, 0] = [-55.0, -20.0, 45.0]
-    P0_ca = np.diag([EST_MEAS_SIGMA ** 2] * 3 + [CV_SIGMA ** 2] * 3 + [CA_SIGMA ** 2] * 3)
+    models = [ca, cv]
 
-    x0_cv = np.zeros((6, 1))
-    x0_cv[0:3, 0] = z0
-    x0_cv[3:6, 0] = [120.0, 120.0, 15.0]
-    P0_cv = np.diag([EST_MEAS_SIGMA ** 2] * 3 + [CV_SIGMA ** 2] * 3)
+    PI = np.array([
+        [0.95, 0.05],
+        [0.05, 0.95],
+    ])
 
-    # ---------------- Forward IMM ----------------
-    ca_fwd = CAFilter(DT, CA_SIGMA, R_est, x0_ca, P0_ca)
-    cv_fwd = CVFilter(DT, CV_SIGMA, R_est, x0_cv, P0_cv, embed_sigma=MIXING_SIGMA)
+    mu0 = np.array([0.9, 0.1])
 
-    imm_fwd = IMM(
-        models=[ca_fwd, cv_fwd],
+    imm = IMM(
+        models=models,
         PI=PI,
         mu0=mu0,
         dt=DT,
-        time_weighted_likelihood=False,
+        t0=0.0,
     )
 
+    z0 = target.measure_position(R_true)
+
+    x0 = np.zeros((9))
+    x0[0:3] = z0
+    x0[3:6] = [0, 0, 0]
+    x0[6:9] = [0, 0, 0]
+    P0 = np.diag([EST_MEAS_SIGMA ** 2] * 3 + [CV_SIGMA ** 2] * 3 + [CA_SIGMA ** 2] * 3)
+
+    imm.set_state(x0, P0, mu0)
+
+
+    ## CONTAINERS
+    steps = int(TOTAL_TIME / DT) + 1
     truth_hist = np.zeros((steps, 9))
     meas_hist = np.zeros((steps, 3))
     x_fwd = np.zeros((steps, 9))
@@ -108,41 +107,37 @@ def main():
 
     # Give k = 0
     truth_hist[0] = target.x.reshape(9)
-    out = imm_fwd.step()
+    meas = Measurement(t=target.t, z=z0, R=R)
+    measurements.append(meas)
+    # out = imm.step(meas)
     meas_hist[0] = [0, 0, 0]
-    x_fwd[0] = out["x_common"][:, 0]
-    P_fwd[0] = out["P_common"]
-    mu_fwd[0] = out["mu"]
+    x_fwd[0] = x0
+    P_fwd[0] = P0
+    mu_fwd[0] = mu0
     t_fwd[0] = 0.0
 
-
+    t = 0.0
     for k in range(steps):
-        if k == 0:
-            continue
+        t += DT
 
         truth = target.step()
         z_true = target.measure_position(R_true)
-        meas = Measurement(t=target.t, z=z_true, R=R_est)
-        measurements.append(meas)
-        out = imm_fwd.step(meas)
+        meas = Measurement(t=target.t, z=z_true, R=R)
+        out = imm.step(meas)
 
-        truth_hist[k] = truth[:, 0]
-        meas_hist[k] = z_true
-        x_fwd[k] = out["x_common"][:, 0]
+        x_fwd[k] = out["x_common"]
         P_fwd[k] = out["P_common"]
         mu_fwd[k] = out["mu"]
         t_fwd[k] = meas.t
-
-
-    # # Print forward data
-    # for snap in imm_fwd._history:
-    #     print(f"Forward state: time: {snap['time']}, \n state: {snap['x_common']}\n p_mode: {snap['mu']}")
+        measurements.append(meas)
+        truth_hist[k] = truth[:, 0]
+        meas_hist[k] = z_true
 
     # ---------------- IMM RTS Smoother ----------------
     if IMM_SMOOTHER:
-        smoother = IMMSmootherRTS(fractional_matrix_power(PI, DT))
-        sm = smoother.smooth(imm_fwd)
-        x_smooth = sm["x_s"][:, :, 0]
+        smoother = IMMSmootherRTS(PI)
+        sm = smoother.smooth(imm)
+        x_smooth = sm["x_s"][:, :]
         P_smooth = sm["P_s"]
         mu_smooth = sm["mu"]
     else:
@@ -162,7 +157,7 @@ def main():
 
         for i in range(3):
             axs_pos[i].plot(t, truth_hist[:, i], "k", label="Truth")
-            
+
             # Plot measurements as red dots
             label_meas = "Measurements" if i == 0 else None
             axs_pos[i].scatter(t, meas_hist[:, i], color="red", s=10, label=label_meas, zorder=5)
@@ -261,19 +256,6 @@ def main():
 
     except Exception as e:
         print("Plot skipped:", e)
-
-    #
-    # # At the end print all measuremnet times and states
-    # for meas in measurements:
-    #     t = float(meas.t)
-    #     z = meas.z  # length-3
-    #     print(
-    #         f'vector.push_back(make_meas('
-    #         f'{t:.6f}, '
-    #         f'(Eigen::VectorXd(3) << {z[0]:.6f}, {z[1]:.6f}, {z[2]:.6f}).finished(), '
-    #         f'noise_sigma));'
-    #     )
-
 
 if __name__ == "__main__":
     main()
