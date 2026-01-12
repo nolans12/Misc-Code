@@ -213,7 +213,7 @@ class IMMSmootherRTS:
             mu_likelihoods /= np.sum(mu_likelihoods)
             mu_s[k] = mu_likelihoods
 
-            mu_s[k] = clamp_and_redistribute(mu_likelihoods)
+            # mu_s[k] = clamp_and_redistribute(mu_likelihoods)
 
             # # # WITH JUST TPM (predicted)
             # mu_tpm = b.T @ mu_s[k+1]
