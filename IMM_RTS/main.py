@@ -1,12 +1,11 @@
-from types import MethodType
-
-import numpy as np
 from imm import IMM
-from models import make_ca_3d, make_cv_3d, to_common_ca, to_internal_ca, to_common_cv, to_internal_cv
+from smoother import IMMSmoother
+from models import make_ca_3d, make_cv_3d, to_external_ca, to_internal_ca, to_external_cv, to_internal_cv
 from measurement import Measurement
 from target import Target3D
-from smoother import IMMSmootherRTS
-
+import numpy as np
+from types import MethodType
+import matplotlib.pyplot as plt
 
 # ======================= CONFIG =======================
 
@@ -15,14 +14,13 @@ IMM_SMOOTHER = True
 TOTAL_TIME = 60.0
 FIRST_ACCEL = 20.0
 SECOND_ACCEL = 40.0
-DT = 1.0
+DT = 0.25
 
 CA_SIGMA = 10.0
-CV_SIGMA = 10.0
-MIXING_SIGMA = CA_SIGMA * 0
+CV_SIGMA = 5.0
 
-EST_MEAS_SIGMA = 15.0
-TRUE_MEAS_SIGMA = 5.0
+EST_MEAS_SIGMA = 50.0
+TRUE_MEAS_SIGMA = 25.0
 
 TARG_GS = 5.0
 TARG_SIGMA = 1.0
@@ -61,26 +59,30 @@ def main():
     R_true = np.diag([TRUE_MEAS_SIGMA ** 2, TRUE_MEAS_SIGMA ** 2, TRUE_MEAS_SIGMA ** 2])
 
     ca = make_ca_3d(DT, CA_SIGMA, R)
-    ca.to_common = MethodType(to_common_ca, ca)
+    ca.to_external = MethodType(to_external_ca, ca)
     ca.to_internal = MethodType(to_internal_ca, ca)
+    
     cv = make_cv_3d(DT, CV_SIGMA, R)
-    cv.to_common = MethodType(to_common_cv, cv)
+    cv.to_external = MethodType(to_external_cv, cv)
     cv.to_internal = MethodType(to_internal_cv, cv)
 
-    models = [ca, cv]
+    ca_2 = make_ca_3d(DT, CA_SIGMA * 0.5, R)
+    ca_2.to_external = MethodType(to_external_ca, ca_2)
+    ca_2.to_internal = MethodType(to_internal_ca, ca_2)
+    
+    filters = [ca, ca_2]
 
     PI = np.array([
-        [0.95, 0.05],
-        [0.05, 0.95],
+        [0.99, 0.01],
+        [0.01, 0.99],
     ])
 
-    mu0 = np.array([0.9, 0.1])
+    mu0 = np.array([0.5, 0.5])
 
     imm = IMM(
-        models=models,
+        filters=filters,
         PI=PI,
         mu0=mu0,
-        dt=DT,
         t0=0.0,
     )
 
@@ -94,7 +96,6 @@ def main():
 
     imm.set_state(x0, P0, mu0)
 
-
     ## CONTAINERS
     steps = int(TOTAL_TIME / DT) + 1
     truth_hist = np.zeros((steps, 9))
@@ -104,158 +105,152 @@ def main():
     mu_fwd = np.zeros((steps, 2))
     t_fwd = np.zeros(steps)
     measurements: list[Measurement] = []
-
-    # Give k = 0
-    truth_hist[0] = target.x.reshape(9)
-    meas = Measurement(t=target.t, z=z0, R=R)
-    measurements.append(meas)
-    # out = imm.step(meas)
-    meas_hist[0] = [0, 0, 0]
-    x_fwd[0] = x0
-    P_fwd[0] = P0
-    mu_fwd[0] = mu0
-    t_fwd[0] = 0.0
-
-    t = 0.0
+    
     for k in range(steps):
-        t += DT
-
-        truth = target.step()
         z_true = target.measure_position(R_true)
         meas = Measurement(t=target.t, z=z_true, R=R)
-        out = imm.step(meas)
+        imm.step(meas)
 
-        x_fwd[k] = out["x_common"]
-        P_fwd[k] = out["P_common"]
-        mu_fwd[k] = out["mu"]
+        x_fwd[k] = imm.cache[-1]["x_fuse"]
+        P_fwd[k] = imm.cache[-1]["P_fuse"]
+        mu_fwd[k] = imm.cache[-1]["mu"]
         t_fwd[k] = meas.t
         measurements.append(meas)
-        truth_hist[k] = truth[:, 0]
+        truth_hist[k] = target.x.reshape(9)
         meas_hist[k] = z_true
+        
+        # Step at the end for next state
+        target.step()
 
     # ---------------- IMM RTS Smoother ----------------
     if IMM_SMOOTHER:
-        smoother = IMMSmootherRTS(PI)
-        sm = smoother.smooth(imm)
-        x_smooth = sm["x_s"][:, :]
-        P_smooth = sm["P_s"]
-        mu_smooth = sm["mu"]
+        smoother = IMMSmoother(PI)
+        smoother.smooth(imm)
+        # Extract lists of xs, Ps, mus from the smoother cache (which is a list of dicts)
+        x_smooth = np.array([snap["x_s"] for snap in smoother.cache])
+        P_smooth = np.array([snap["P_s"] for snap in smoother.cache])
+        mu_smooth = np.array([snap["mu_s"] for snap in smoother.cache])
     else:
         x_smooth = None
         P_smooth = None
 
     # ---------------- Plots ----------------
-    try:
-        import matplotlib.pyplot as plt
+    t = t_fwd
 
-        # t = np.array([m.t for m in measurements])
-        t = t_fwd
+    # ---- Position with ±1σ ----
+    fig_pos, axs_pos = plt.subplots(3, 1, figsize=(9, 8), sharex=True)
+    labels_pos = ["x (m)", "y (m)", "z (m)"]
 
-        # ---- Position with ±1σ ----
-        fig_pos, axs_pos = plt.subplots(3, 1, figsize=(9, 8), sharex=True)
-        labels_pos = ["x (m)", "y (m)", "z (m)"]
+    for i in range(3):
+        axs_pos[i].plot(t, truth_hist[:, i], "k", label="Truth")
 
-        for i in range(3):
-            axs_pos[i].plot(t, truth_hist[:, i], "k", label="Truth")
+        # Measurements
+        label_meas = "Measurements" if i == 0 else None
+        axs_pos[i].scatter(
+            t, meas_hist[:, i],
+            color="red", s=10, label=label_meas, zorder=5
+        )
 
-            # Plot measurements as red dots
-            label_meas = "Measurements" if i == 0 else None
-            axs_pos[i].scatter(t, meas_hist[:, i], color="red", s=10, label=label_meas, zorder=5)
+        plot_with_sigma(
+            axs_pos[i], t, x_fwd, P_fwd, i,
+            label="Forward IMM", color="tab:blue",
+            linestyle="--", alpha=0.2
+        )
 
-            plot_with_sigma(
-                axs_pos[i], t, x_fwd, P_fwd, i,
-                label="Forward IMM", color="tab:blue", linestyle="--", alpha=0.2
-            )
-
-            if IMM_SMOOTHER:
-                plot_with_sigma(
-                    axs_pos[i], t, x_smooth, P_smooth, i,
-                    label="Smoothed IMM", color="tab:orange", linestyle="-", alpha=0.3
-                )
-
-            axs_pos[i].set_ylabel(labels_pos[i])
-            axs_pos[i].grid(True)
-            axs_pos[i].axvline(FIRST_ACCEL, linestyle="--", color="k")
-            axs_pos[i].axvline(SECOND_ACCEL, linestyle="--", color="k")
-
-        axs_pos[0].legend()
-        axs_pos[-1].set_xlabel("Time (s)")
-        fig_pos.tight_layout()
-
-        # ---- Velocity with ±1σ ----
-        fig_vel, axs_vel = plt.subplots(3, 1, figsize=(9, 8), sharex=True)
-        labels_vel = ["vx (m/s)", "vy (m/s)", "vz (m/s)"]
-
-        for i in range(3):
-            idx = 3 + i
-            axs_vel[i].plot(t, truth_hist[:, idx], "k", label="Truth")
-
-            plot_with_sigma(
-                axs_vel[i], t, x_fwd, P_fwd, idx,
-                label="Forward IMM", color="tab:blue", linestyle="--", alpha=0.2
-            )
-
-            if IMM_SMOOTHER:
-                plot_with_sigma(
-                    axs_vel[i], t, x_smooth, P_smooth, idx,
-                    label="Smoothed IMM", color="tab:orange", linestyle="-", alpha=0.3
-                )
-
-            axs_vel[i].set_ylabel(labels_vel[i])
-            axs_vel[i].grid(True)
-            axs_vel[i].axvline(FIRST_ACCEL, linestyle="--", color="k")
-            axs_vel[i].axvline(SECOND_ACCEL, linestyle="--", color="k")
-
-        axs_vel[0].legend()
-        axs_vel[-1].set_xlabel("Time (s)")
-        fig_vel.tight_layout()
-
-        # ---- Acceleration with ±1σ ----
-        fig_acc, axs_acc = plt.subplots(3, 1, figsize=(9, 8), sharex=True)
-        labels_acc = ["$a_x$ (m/s²)", "$a_y$ (m/s²)", "$a_z$ (m/s²)"]
-
-        for i in range(3):
-            idx = 6 + i
-            axs_acc[i].plot(t, truth_hist[:, idx], "k", label="Truth")
-
-            plot_with_sigma(
-                axs_acc[i], t, x_fwd, P_fwd, idx,
-                label="Forward IMM", color="tab:blue", linestyle="--", alpha=0.2
-            )
-
-            if IMM_SMOOTHER:
-                plot_with_sigma(
-                    axs_acc[i], t, x_smooth, P_smooth, idx,
-                    label="Smoothed IMM", color="tab:orange", linestyle="-", alpha=0.3
-                )
-
-            axs_acc[i].set_ylabel(labels_acc[i])
-            axs_acc[i].grid(True)
-            axs_acc[i].axvline(FIRST_ACCEL, linestyle="--", color="k")
-            axs_acc[i].axvline(SECOND_ACCEL, linestyle="--", color="k")
-
-        axs_acc[0].legend()
-        axs_acc[-1].set_xlabel("Time (s)")
-        fig_acc.tight_layout()
-
-        # ---- Mode probabilities ----
-        plt.figure(figsize=(9, 4))
-        plt.plot(t, mu_fwd[:, 0], label="P(CA) forward")
-        plt.plot(t, mu_fwd[:, 1], label="P(CV) forward")
         if IMM_SMOOTHER:
-            plt.plot(t, mu_smooth[:, 0], "--", label="P(CA) smooth")
-            plt.plot(t, mu_smooth[:, 1], "--", label="P(CV) smooth")
-        plt.axvline(FIRST_ACCEL, linestyle="--", color="k")
-        plt.axvline(SECOND_ACCEL, linestyle="--", color="k")
-        plt.xlabel("Time (s)")
-        plt.ylabel("Mode probability")
-        plt.legend()
-        plt.grid()
+            plot_with_sigma(
+                axs_pos[i], t, x_smooth, P_smooth, i,
+                label="Smoothed IMM", color="tab:orange",
+                linestyle="-", alpha=0.3
+            )
 
-        plt.show()
+        axs_pos[i].set_ylabel(labels_pos[i])
+        axs_pos[i].grid(True)
+        axs_pos[i].axvline(FIRST_ACCEL, linestyle="--", color="k")
+        axs_pos[i].axvline(SECOND_ACCEL, linestyle="--", color="k")
 
-    except Exception as e:
-        print("Plot skipped:", e)
+    axs_pos[0].legend()
+    axs_pos[-1].set_xlabel("Time (s)")
+    fig_pos.tight_layout()
+
+    # ---- Velocity with ±1σ ----
+    fig_vel, axs_vel = plt.subplots(3, 1, figsize=(9, 8), sharex=True)
+    labels_vel = ["vx (m/s)", "vy (m/s)", "vz (m/s)"]
+
+    for i in range(3):
+        idx = 3 + i
+        axs_vel[i].plot(t, truth_hist[:, idx], "k", label="Truth")
+
+        plot_with_sigma(
+            axs_vel[i], t, x_fwd, P_fwd, idx,
+            label="Forward IMM", color="tab:blue",
+            linestyle="--", alpha=0.2
+        )
+
+        if IMM_SMOOTHER:
+            plot_with_sigma(
+                axs_vel[i], t, x_smooth, P_smooth, idx,
+                label="Smoothed IMM", color="tab:orange",
+                linestyle="-", alpha=0.3
+            )
+
+        axs_vel[i].set_ylabel(labels_vel[i])
+        axs_vel[i].grid(True)
+        axs_vel[i].axvline(FIRST_ACCEL, linestyle="--", color="k")
+        axs_vel[i].axvline(SECOND_ACCEL, linestyle="--", color="k")
+
+    axs_vel[0].legend()
+    axs_vel[-1].set_xlabel("Time (s)")
+    fig_vel.tight_layout()
+
+    # ---- Acceleration with ±1σ ----
+    fig_acc, axs_acc = plt.subplots(3, 1, figsize=(9, 8), sharex=True)
+    labels_acc = ["$a_x$ (m/s²)", "$a_y$ (m/s²)", "$a_z$ (m/s²)"]
+
+    for i in range(3):
+        idx = 6 + i
+        axs_acc[i].plot(t, truth_hist[:, idx], "k", label="Truth")
+
+        plot_with_sigma(
+            axs_acc[i], t, x_fwd, P_fwd, idx,
+            label="Forward IMM", color="tab:blue",
+            linestyle="--", alpha=0.2
+        )
+
+        if IMM_SMOOTHER:
+            plot_with_sigma(
+                axs_acc[i], t, x_smooth, P_smooth, idx,
+                label="Smoothed IMM", color="tab:orange",
+                linestyle="-", alpha=0.3
+            )
+
+        axs_acc[i].set_ylabel(labels_acc[i])
+        axs_acc[i].grid(True)
+        axs_acc[i].axvline(FIRST_ACCEL, linestyle="--", color="k")
+        axs_acc[i].axvline(SECOND_ACCEL, linestyle="--", color="k")
+
+    axs_acc[0].legend()
+    axs_acc[-1].set_xlabel("Time (s)")
+    fig_acc.tight_layout()
+
+    # ---- Mode probabilities ----
+    plt.figure(figsize=(9, 4))
+    plt.plot(t, mu_fwd[:, 0], label="P(CA) forward")
+    plt.plot(t, mu_fwd[:, 1], label="P(CV) forward")
+
+    if IMM_SMOOTHER:
+        plt.plot(t, mu_smooth[:, 0], "--", label="P(CA) smooth")
+        plt.plot(t, mu_smooth[:, 1], "--", label="P(CV) smooth")
+
+    plt.axvline(FIRST_ACCEL, linestyle="--", color="k")
+    plt.axvline(SECOND_ACCEL, linestyle="--", color="k")
+    plt.xlabel("Time (s)")
+    plt.ylabel("Mode probability")
+    plt.legend()
+    plt.grid()
+
+    plt.show()
+
 
 if __name__ == "__main__":
     main()

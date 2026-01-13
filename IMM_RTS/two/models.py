@@ -43,31 +43,36 @@ def to_internal_ca(self, x_common, P_common):
     return x_common[0:9].copy(), P_common[0:9, 0:9].copy()
 
 def make_cv_3d(dt: float, sigma: float, R: np.ndarray) -> KalmanFilter:
-    f = KalmanFilter(dim_x=6, dim_z=3)
+    f = KalmanFilter(dim_x=9, dim_z=3)
 
-    f.x = np.zeros(6)
+    f.x = np.zeros(9)
 
     # State transition (CV embedded in CA)
     f.F = np.array([
-        [1, 0, 0, dt, 0,  0],
-        [0, 1, 0, 0,  dt, 0],
-        [0, 0, 1, 0,  0,  dt],
-        [0, 0, 0, 1,  0,  0],
-        [0, 0, 0, 0,  1,  0],
-        [0, 0, 0, 0,  0,  1],
+        [1, 0, 0, dt, 0,  0,  0,  0,  0],
+        [0, 1, 0, 0,  dt, 0,  0,  0,  0],
+        [0, 0, 1, 0,  0,  dt, 0,  0,  0],
+
+        [0, 0, 0, 1,  0,  0,  0,  0,  0],
+        [0, 0, 0, 0,  1,  0,  0,  0,  0],
+        [0, 0, 0, 0,  0,  1,  0,  0,  0],
+
+        [0, 0, 0, 0,  0,  0,  0,  0,  0],
+        [0, 0, 0, 0,  0,  0,  0,  0,  0],
+        [0, 0, 0, 0,  0,  0,  0,  0,  0],
     ])
 
     # Measure position only
     f.H = np.array([
-        [1, 0, 0, 0, 0, 0],
-        [0, 1, 0, 0, 0, 0],
-        [0, 0, 1, 0, 0, 0],
+        [1, 0, 0, 0, 0, 0, 0, 0, 0],
+        [0, 1, 0, 0, 0, 0, 0, 0, 0],
+        [0, 0, 1, 0, 0, 0, 0, 0, 0],
     ])
 
     f.Q = _build_Q_cv(dt, sigma)
 
     f.R = R
-    f.P = np.eye(6) * 10.0
+    f.P = np.eye(9) * 10.0
 
     return f
 
@@ -83,7 +88,7 @@ def to_internal_cv(self, x_common, P_common):
 
 def _build_Q_cv(dt, sigma):
     q = sigma ** 2
-    Q = np.zeros((6, 6))
+    Q = np.zeros((9, 9))
     for i in range(3):
         Qb = q * np.array([
             [dt ** 4 / 4, dt ** 3 / 2],
@@ -93,7 +98,6 @@ def _build_Q_cv(dt, sigma):
         for r in range(2):
             for c in range(2):
                 Q[idx[r], idx[c]] = Qb[r, c]
-
     return Q
 
 def _build_Q_ca(dt, sigma):
