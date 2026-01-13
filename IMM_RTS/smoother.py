@@ -40,36 +40,28 @@ class IMMSmoother:
         Standard Rauch–Tung–Striebel backward recursion.
 
         All inputs are in EXTERNAL space.
-        RTS is performed in INTERNAL space and converted back.
+        RTS is performed in INTERNAL space and outputted to INTERNAL
         """
-        # External → internal
-        x_filt_i, P_filt_i = filter.to_internal(x_filt, P_filt)
-        x_pred_i, P_pred_i = filter.to_internal(x_pred, P_pred)
-        x_next_i, P_next_i = filter.to_internal(x_next, P_next)
-
         # RTS equations
             # for cpp, is it possilbe to recompute F? or just save it with the predictg and mu_mix?
-        C = P_filt_i @ F.T
-        G = C @ np.linalg.inv(P_pred_i)
+        C = P_filt @ F.T
+        G = C @ np.linalg.inv(P_pred)
 
-        x_s_i = x_filt_i + G @ (x_next_i - x_pred_i)
-        P_s_i = P_filt_i + G @ (P_next_i - P_pred_i) @ G.T
+        x_s = x_filt + G @ (x_next - x_pred)
+        P_s = P_filt + G @ (P_next - P_pred) @ G.T
 
-        # Internal → external
-        x_s_e, P_s_e = filter.to_external(x_s_i, P_s_i)
-
-        return x_s_e, P_s_e
+        return x_s, P_s
 
     # ============================================================
     # MODE INTERACTION ENTIRE STEP
     # ============================================================
         
-    def mode_interaction( 
+    def mode_interaction_pre( 
         self,
-        x_premixed: np.ndarray,
-        P_premixed: np.ndarray,
         x_fwd: np.ndarray,
         P_fwd: np.ndarray,
+        x_premixed: np.ndarray,
+        P_premixed: np.ndarray,
         x_rts: np.ndarray,
         P_rts: np.ndarray,
         PI: np.ndarray,
@@ -80,13 +72,16 @@ class IMMSmoother:
         back_info_matrices = []
         for i in range(M): 
             
-            # DO ALL DATA FUSION W.R.T. COMMON FRAME
+            # DO ALL DATA FUSION W.R.T. INTERNAL FRAME
             
-            P_rts_inv_i = np.linalg.inv(P_rts[i][0:comm, 0:comm]) 
-            P_mixed_inv_i = np.linalg.inv(P_premixed[i][0:comm, 0:comm])
+            # get internal diimension of filter i
+            dim = len(x_rts[i])
+            
+            P_rts_inv_i = np.linalg.inv(P_rts[i]) # rts is already in internal dimension
+            P_mixed_inv_i = np.linalg.inv(P_premixed[i][0:dim,0:dim])
             
             back_info_matrices.append(P_rts_inv_i - P_mixed_inv_i) # 7, one-step backward predicted information matrix
-            back_info_vectors.append((P_rts_inv_i @ x_rts[i][0:comm]) - (P_mixed_inv_i @ x_premixed[i][0:comm])) # 8, one-step backward predicted information vector      
+            back_info_vectors.append((P_rts_inv_i @ x_rts[i]) - (P_mixed_inv_i @ x_premixed[i][0:dim])) # 8, one-step backward predicted information vector      
          
         invertible = True
         for i in range(M):
@@ -114,8 +109,8 @@ class IMMSmoother:
             mu_mix = np.zeros((M, M))
             likelihoods = np.zeros((M, M))
             for i in range(M):
-                for j in range(M):
-                    # Get likelihood
+                for j in range(M):                   
+                    # Get likelihood WITH RESPECT TO THE TOTAL COMMON DIMENSION
                     Delta_ji = x_back_preds[i] - x_fwd[j][0:comm]
                     D_ji = P_back_preds[i] + P_fwd[j][0:comm,0:comm]
                     likelihood = gaussian_pdf(Delta_ji, np.zeros(len(Delta_ji)), D_ji) # 10, Two-mode conditioned likelihood
@@ -129,25 +124,36 @@ class IMMSmoother:
                 for j in range(M):
                     mu_mix[i, j] = (PI[j, i] * likelihoods[j, i]) / d[j] # 11, Smoothed mixing probabilty
             return mu_mix, likelihoods
-        
-    def mode_interaction_1(self, M, x_fwd, P_fwd, back_info_vectors, back_info_matrices, mu_mix, comm: float):
+         
+    def mode_interaction_1(self, M, x_fwd, P_fwd, back_info_vectors, back_info_matrices, mu_mix, comm_dim: float, ext_dim: float):
         # Comput the fwd info mat and vec
         fwd_info_matrices = []
         fwd_info_vectors = []
         for i in range(M):
-            fwd_info_matrices.append(np.linalg.inv(P_fwd[i][0:comm, 0:comm]))
-            fwd_info_vectors.append(fwd_info_matrices[i] @ x_fwd[i][0:comm])
+            fwd_info_matrices.append(np.linalg.inv(P_fwd[i]))
+            fwd_info_vectors.append(fwd_info_matrices[i] @ x_fwd[i])
         
         # 1. Combination
-        n = back_info_vectors[0].shape[0]
+        n = back_info_vectors[0].shape[0] 
         P_jis = np.zeros((M, M, n, n))
         x_hat_jis =  np.zeros((M, M, n))
         for i in range(M): # 1
+            dim_i = len(x_fwd[i])
             for j in range(M): # 2
-                # Two-mode conditioned smoothed estimate
-                P_jis[j, i, :, :] = np.linalg.inv(back_info_matrices[i] + fwd_info_matrices[j]) # 3, Two-mode conditioned smoothed covariance
-                x_hat_jis[j, i, :] = P_jis[j, i, :, :] @ (back_info_vectors[i] + fwd_info_vectors[j]) # 4, Two-mode conditioned smoothed mean
-
+                dim_j = len(x_fwd[j])
+                
+                # Take the check if min of dim_i and dim_j is less than ext_dim
+                min_dim = min(dim_i, dim_j)
+                
+                if min_dim < comm_dim:
+                    ValueError("Shouldnt be possible")
+                elif min_dim >= ext_dim: # Just do fusion in ext_dim, easy
+                    # Two-mode conditioned smoothed estimate
+                    P_jis[j, i, :, :] = np.linalg.inv(back_info_matrices[i][0:ext_dim] + fwd_info_matrices[j][0:ext_dim]) # 3, Two-mode conditioned smoothed covariance
+                    x_hat_jis[j, i, :] = P_jis[j, i, :, :] @ (back_info_vectors[i][0:ext_dim] + fwd_info_vectors[j][0:ext_dim]) # 4, Two-mode conditioned smoothed mean
+                elif min_dim < ext_dim: # Need to check if one of them has ext_dim to populate, otherwise 
+                    ValueError("Havn't done this yet!")
+                    
         # 2. Mixing
         x_hats = []
         P_hats = []
@@ -247,11 +253,14 @@ class IMMSmoother:
         T = len(cache)
         M = imm.M
         n = imm.n
+        
+        # COMMON DIMENSION THAT CAN BE PROPERLY MIXED AMONGST MODELS
+        common = imm.common_dim
 
-        # Allocate backward arrays
-        x_mode = np.zeros((T, M, n))
-        P_mode = np.zeros((T, M, n, n))
-        mu_s   = np.zeros((T, M))
+        # Allocate backward arrays as object arrays to allow variable-sized entries
+        x_mode = np.empty((T, M), dtype=object)
+        P_mode = np.empty((T, M), dtype=object)
+        mu_s   = np.empty((T, M), dtype=object)
 
         # --------------------------------------------------------
         # INITIALIZATION (k = T-1)
@@ -264,8 +273,8 @@ class IMMSmoother:
         
         # Copy first snapshot in 
         snapshot = {
-            "x_s": last['x_fuse'][0:imm.common_dim],
-            "P_s": last['P_fuse'][0:imm.common_dim,0:imm.common_dim],
+            "x_s": last['x_fuse'],
+            "P_s": last['P_fuse'],
             "x_filt_s": last['x_filter'],
             "P_filt_s": last['P_filter'],
             "mu_s": last["mu"],
@@ -285,8 +294,8 @@ class IMMSmoother:
                 # ------------------------
                 # MODE-MATCHED RTS
                 # ------------------------
-                x_rts = np.zeros((M, n))
-                P_rts = np.zeros((M, n, n))
+                x_rts = [None] * M
+                P_rts = [None] * M
 
                 for j in range(M):
                     x_rts[j], P_rts[j] = self._rts_step(
@@ -300,19 +309,18 @@ class IMMSmoother:
                         cur["F"][j],
                     )
 
-                a = 1
                 # ------------------------
                 # MODE INTERACTION
                 # ------------------------
-                back_info_vectors, back_info_matrices, mu_mix, likelihoods, invertible = self.mode_interaction(
+                back_info_vectors, back_info_matrices, mu_mix, likelihoods, invertible = self.mode_interaction_pre(
+                    cur['x_filter'],
+                    cur['P_filter'],
                     nxt["x_premixed"],
                     nxt["P_premixed"],
                     x_rts,
                     P_rts,
-                    cur['x_filter'],
-                    cur['P_filter'],
                     PI,
-                    imm.common_dim
+                    common
                 )
 
                 if invertible:
@@ -325,17 +333,17 @@ class IMMSmoother:
                     x_filt_smooth, P_filt_smooth = self.mode_interaction_2(M, cur['x_filter'], cur['P_filter'], back_state_vectors, back_cov_matrices, mu_mix, imm.common_dim)
                 else:
                     # METHOD 1 
-                    x_filt_smooth, P_filt_smooth = self.mode_interaction_1(M, cur['x_filter'], cur['P_filter'], back_info_vectors, back_info_matrices, mu_mix, imm.common_dim)
+                    x_filt_smooth, P_filt_smooth = self.mode_interaction_1(M, cur['x_filter'], cur['P_filter'], back_info_vectors, back_info_matrices, mu_mix, imm.common_dim, imm.n)
         
                 # ------------------------
                 # MODE PROBABILITY SMOOTHING
                 # ------------------------
                 
-                need to figure out what to do with common dim state, otherwise x_smooth is 6d,
-                probably take from common and then add full accel at end
+                # need to figure out what to do with common dim state, otherwise x_smooth is 6d,
+                # probably take from common and then add full accel at end
                 
-                like if size > common
-                take common : end and append it 
+                # like if size > common
+                # take common : end and append it 
                 
                 # ensure use PI from next cache, not curr
                 mu_smooth = self.get_smoothed_pmodes(cur["mu"], PI, likelihoods, invertible)

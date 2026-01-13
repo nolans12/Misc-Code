@@ -95,6 +95,10 @@ class IMM:
             f.R = meas.R
 
         # --- Pre Mixing ---
+        
+        # For now, just do in external, so we mix in 0s from CV, which isn't ideal.
+        # Could later figure out how to not mix accel from CV in
+        
         c_j = self.PI.T @ self.mu
         mu_ij = (self.PI * self.mu[:, None]) / c_j[None, :]
 
@@ -116,6 +120,9 @@ class IMM:
             
 
         # --- Prediction + Update ---
+        
+        # in internal frame
+        
         x_pred, P_pred = [], []
         x_filter, P_filter = [], []
         likelihood = np.zeros(self.M)
@@ -123,15 +130,13 @@ class IMM:
         for j in range(self.M):
             # Predict
             self.filters[j].predict()
-            x_pred_ext, P_pred_ext = self.filters[j].to_external(self.filters[j].x, self.filters[j].P)
-            x_pred.append(x_pred_ext)
-            P_pred.append(P_pred_ext)
+            x_pred.append(self.filters[j].x)
+            P_pred.append(self.filters[j].P)
 
             # Update
             self.filters[j].update(meas.z)
-            x_filter_ext, P_filter_ext = self.filters[j].to_external(self.filters[j].x, self.filters[j].P)
-            x_filter.append(x_filter_ext)
-            P_filter.append(P_filter_ext)
+            x_filter.append(self.filters[j].x)
+            P_filter.append(self.filters[j].P)
 
             # Likelihood calc
             likelihood[j] = gaussian_pdf(meas.z, x_pred[j][0:3], P_pred[j][0:3,0:3] + meas.R)
@@ -139,12 +144,10 @@ class IMM:
         self.mu = c_j * likelihood
         self.mu /= np.sum(self.mu)
 
-        # # RTS cross-covariance
-        #     # This is shape of internal
-        # C = [P_mix[i] @ self.filters[i].F.T for i in range(self.M)]
-
         # --- IMM Fusion (Combination Step) ---
         # Fused state: weighted sum of mode estimates
+        
+        # Need to do fusion in external
         
         x_fuse = np.zeros(self.n)
         for j in range(self.M):

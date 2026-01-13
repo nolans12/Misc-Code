@@ -70,7 +70,7 @@ def main():
     ca_2.to_external = MethodType(to_external_ca, ca_2)
     ca_2.to_internal = MethodType(to_internal_ca, ca_2)
     
-    filters = [ca, ca_2]
+    filters = [ca, cv]
 
     PI = np.array([
         [0.99, 0.01],
