@@ -21,6 +21,35 @@ def mode_matched_smoothing(next_fwd, bck):
         P_rts.append(Pb)
     return x_rts, P_rts
 
+
+def get_mixing_weights(Pi, Info_matrices, Info_vectors, x_hats, P_hats, invertible):
+    if not invertible:
+        return Pi, np.zeros_like(Pi)
+    else:
+        M = len(x_hats)
+        x_back_preds = []
+        P_back_preds = []
+        for i in range(M):
+            P_back_preds.append(np.linalg.inv(Info_matrices[i]))
+            x_back_preds.append(P_back_preds[i] @ Info_vectors[i])
+
+        mu_mix = np.zeros((M, M))
+        likelihoods = np.zeros((M, M))
+        for i in range(M):
+            for j in range(M):
+                Delta_ji = x_back_preds[i] - x_hats[j]
+                D_ji = P_back_preds[i] + P_hats[j]
+                likelihoods[j, i] = gaussian_pdf(Delta_ji, np.zeros(len(Delta_ji)), D_ji) # 10, Two-mode conditioned likelihood
+
+        d = np.zeros(M)
+        for j in range(M):
+            d[j] = sum(Pi[j, i] * likelihoods[j, i] for i in range(M))
+        for i in range(M):
+            for j in range(M):
+                mu_mix[i, j] = (Pi[j, i] * likelihoods[j, i]) / d[j] # 11, Smoothed mixing probabilty
+        return mu_mix, likelihoods
+
+
 def mode_interaction_preliminary(M, Pi, fwd, next_fwd, x_rts, P_rts):
     x_hats = fwd["x_hats"]
     P_hats = fwd["P_hats"]
@@ -49,38 +78,6 @@ def mode_interaction_preliminary(M, Pi, fwd, next_fwd, x_rts, P_rts):
     mu_mix, likelihoods = get_mixing_weights(Pi, back_info_matrices, back_info_vectors, x_hats, P_hats, invertible)
     return fwd_info_vectors, fwd_info_matrices, back_info_vectors, back_info_matrices, mu_mix, likelihoods, invertible
 
-
-def get_mixing_weights(Info_vectors, Info_matrices, x_fwd, P_fwd, PI, invertible):
-    if not invertible:
-        # This is safe to have 0 p-mode likelihood because its just account for in bayes wiht += later\, so += 0*
-        return PI, np.zeros_like(PI)
-    else:
-        M = len(x_fwd)
-        x_back_preds = []
-        P_back_preds = []
-        for i in range(M):
-            # Invert back to get x and Ps
-            P_back_preds.append(np.linalg.inv(Info_matrices[i]))
-            x_back_preds.append(P_back_preds[i] @ Info_vectors[i])
-
-        mu_mix = np.zeros((M, M))
-        likelihoods = np.zeros((M, M))
-        for i in range(M):
-            for j in range(M):
-                # Get likelihood
-                Delta_ji = x_back_preds[i] - x_fwd[j]
-                D_ji = P_back_preds[i] + P_fwd[j]
-                likelihoods[j, i] = gaussian_pdf(Delta_ji, np.zeros(len(Delta_ji)), D_ji) # 10, Two-mode conditioned likelihood
-
-        # Renormalize
-        d = np.zeros(M)
-        for j in range(M):
-            d[j] = sum(PI[j, i] * likelihoods[j, i] for i in range(M))
-        for i in range(M):
-            for j in range(M):
-                mu_mix[i, j] = (PI[j, i] * likelihoods[j, i]) / d[j] # 11, Smoothed mixing probabilty
-        return mu_mix, likelihoods
-    
 
 def mode_interaction_1(M, fwd_info_vectors, fwd_info_matrices, back_info_vectors, back_info_matrices, mu_mix):
     # 1. Combination

@@ -138,31 +138,31 @@ class IMMSmootherRTS:
             # ---------- smoothed mode probabilities ----------
 
             # DEFAULT FROM PAPER
-            # Lambda = np.zeros(M)
-            # for j in range(M):
-            #     val = 0.0
-            #     x_pred_c, P_pred_c = imm.models[j].to_common(
-            #         hist[k+1]["models"][j]["x_pred"],
-            #         hist[k+1]["models"][j]["P_pred"],
-            #     )
-            #     for i in range(M):
-            #         xi_c, _ = imm.models[i].to_common(
-            #             x_mode[k+1][i], P_mode[k+1][i]
-            #         )
-            #         y = xi_c - x_pred_c
-            #         # print(f"y: {y}")
-            #         val += self.PI[j, i] * self._gauss(y[0:6], P_pred_c[0:6,0:6])
-            #         print(f"value iter: {self.PI[j, i] * self._gauss(y[0:6], P_pred_c[0:6,0:6])}")
-            #     Lambda[j] = max(val, self.eps)
-            # print(f"smoothed_likelihoods: {Lambda}")
-            # mu_tmp = Lambda * mu_f
-            # mu_s[k] = mu_tmp / np.sum(mu_tmp)
+            Lambda = np.zeros(M)
+            for j in range(M):
+                val = 0.0
+                x_pred_c, P_pred_c = imm.models[j].to_common(
+                    hist[k+1]["models"][j]["x_pred"],
+                    hist[k+1]["models"][j]["P_pred"],
+                )
+                for i in range(M):
+                    xi_c, _ = imm.models[i].to_common(
+                        x_mode[k+1][i], P_mode[k+1][i]
+                    )
+                    y = xi_c - x_pred_c
+                    # print(f"y: {y}")
+                    val += self.PI[j, i] * self._gauss(y[0:6], P_pred_c[0:6,0:6])
+                    print(f"value iter: {self.PI[j, i] * self._gauss(y[0:6], P_pred_c[0:6,0:6])}")
+                Lambda[j] = max(val, self.eps)
+            print(f"smoothed_likelihoods: {Lambda}")
+            mu_tmp = Lambda * mu_f
+            mu_s[k] = mu_tmp / np.sum(mu_tmp)
             
             
-            # WITH JUST B
-            mu_s[k] = b.T @ mu_s[k+1]
-            mu_s[k] = np.maximum(mu_s[k], self.eps)
-            mu_s[k] /= np.sum(mu_s[k])
+            # # WITH JUST B
+            # mu_s[k] = b.T @ mu_s[k+1]
+            # mu_s[k] = np.maximum(mu_s[k], self.eps)
+            # mu_s[k] /= np.sum(mu_s[k])
 
 
             # # BETA THING

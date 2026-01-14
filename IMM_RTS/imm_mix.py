@@ -1,3 +1,5 @@
+# Same IMM except the mixing preserves accel state (assumes CA-CV filter) of 9D
+
 # imm_filterpy.py
 from __future__ import annotations
 
@@ -95,28 +97,52 @@ class IMM:
             f.R = meas.R
 
         # --- Pre Mixing ---
-        
-        # For now, just do in external, so we mix in 0s from CV, which isn't ideal.
-        # Could later figure out how to not mix accel from CV in
-        
+
         c_j = self.PI.T @ self.mu
         mu_ij = (self.PI * self.mu[:, None]) / c_j[None, :]
-
+        
         x_mix = []
         P_mix = []
+
+        # Extract Shared Statespace
+        x_f = [f.x.copy() for f in self.filters]
+        P_f = [f.P.copy() for f in self.filters]
+        x_f_shared = x_f.copy()
+        x_f_shared[0] = x_f[0][0:6]
+        P_f_shared = P_f.copy()
+        P_f_shared[0] = P_f[0][0:6, 0:6]
+        # Mixed Shared Statespace Only
         for j in range(self.M):
-            x_j_ext, P_j_ext = self.filters[j].to_external(self.filters[j].x, self.filters[j].P)
-            xbar = np.zeros(x_j_ext.shape[0])
-            Pbar = np.zeros((x_j_ext.shape[0], x_j_ext.shape[0]))    
-            for i in range(self.M):
-                x_i_ext, P_i_ext = self.filters[i].to_external(self.filters[i].x, self.filters[i].P)
-                xbar += mu_ij[i, j] * x_i_ext
-                Pbar += mu_ij[i, j] * (
-                    P_i_ext
-                    + np.outer(x_i_ext - xbar, x_i_ext - xbar)
+            xbar = sum(mu_ij[i, j] * x_f_shared[i] for i in range(self.M))
+            Pbar = sum(
+                mu_ij[i, j] * (
+                    P_f_shared[i] + np.outer(x_f_shared[i] - xbar, x_f_shared[i] - xbar)
                 )
+                for i in range(self.M)
+            )
             x_mix.append(xbar)
             P_mix.append(Pbar)
+        # Re-insert Augmented Components
+        x_mix[0] = np.concatenate([x_mix[0], x_f[0][6:9]])
+        P_mix[0] = np.block([
+            [P_mix[0], P_f[0][0:6, 6:9]],
+            [P_f[0][6:9,:]] ])
+
+        # x_mix = []
+        # P_mix = []
+        # for j in range(self.M):
+        #     x_j_ext, P_j_ext = self.filters[j].to_external(self.filters[j].x, self.filters[j].P)
+        #     xbar = np.zeros(x_j_ext.shape[0])
+        #     Pbar = np.zeros((x_j_ext.shape[0], x_j_ext.shape[0]))    
+        #     for i in range(self.M):
+        #         x_i_ext, P_i_ext = self.filters[i].to_external(self.filters[i].x, self.filters[i].P)
+        #         xbar += mu_ij[i, j] * x_i_ext
+        #         Pbar += mu_ij[i, j] * (
+        #             P_i_ext
+        #             + np.outer(x_i_ext - xbar, x_i_ext - xbar)
+        #         )
+        #     x_mix.append(xbar)
+        #     P_mix.append(Pbar)
             
 
         # --- Prediction + Update ---
@@ -164,7 +190,6 @@ class IMM:
             P_fuse += self.mu[j] * (P_j + np.outer(x_j - x_fuse, x_j - x_fuse))
 
         snapshot = {
-            "time": self.time,
             "x_premixed": x_mix,
             "P_premixed": P_mix,
             "F": [self.filters[i].F for i in range(self.M)],

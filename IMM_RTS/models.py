@@ -76,12 +76,11 @@ def to_external_cv(self, x_internal: np.ndarray, P_internal: np.ndarray):
     P = np.zeros((9, 9))
     x[0:6] = x_internal[0:6]
     P[0:6, 0:6] = P_internal[0:6,0:6]
-    P[7:9, 7:9] = 
+    P[6:9, 6:9] = np.eye(3) * 50 * 50 # about max accel possible
     return x, P
 
 def to_internal_cv(self, x_common, P_common):
-    # return x_common[0:6].copy(), P_common[0:6, 0:6].copy()
-    return x_common[0:9].copy(), P_common[0:9, 0:9].copy()
+    return x_common[0:6].copy(), P_common[0:6, 0:6].copy()
 
 def _build_Q_cv(dt, sigma):
     q = sigma ** 2
@@ -95,7 +94,6 @@ def _build_Q_cv(dt, sigma):
         for r in range(2):
             for c in range(2):
                 Q[idx[r], idx[c]] = Qb[r, c]
-
     return Q
 
 def _build_Q_ca(dt, sigma):

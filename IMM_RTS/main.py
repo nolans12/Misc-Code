@@ -1,5 +1,8 @@
 from imm import IMM
+# from imm_mix import IMM
 from smoother import IMMSmoother
+# from smoother_ci import IMMSmoother
+# from jared_ca_cv_smoother import IMMSmoother
 from models import make_ca_3d, make_cv_3d, to_external_ca, to_internal_ca, to_external_cv, to_internal_cv
 from measurement import Measurement
 from target import Target3D
@@ -14,10 +17,10 @@ IMM_SMOOTHER = True
 TOTAL_TIME = 60.0
 FIRST_ACCEL = 20.0
 SECOND_ACCEL = 40.0
-DT = 0.25
+DT = 1.0
 
 CA_SIGMA = 10.0
-CV_SIGMA = 5.0
+CV_SIGMA = 1.0
 
 EST_MEAS_SIGMA = 50.0
 TRUE_MEAS_SIGMA = 25.0
@@ -150,7 +153,7 @@ def main():
             t, meas_hist[:, i],
             color="red", s=10, label=label_meas, zorder=5
         )
-
+        
         plot_with_sigma(
             axs_pos[i], t, x_fwd, P_fwd, i,
             label="Forward IMM", color="tab:blue",
@@ -158,6 +161,7 @@ def main():
         )
 
         if IMM_SMOOTHER:
+            # print(i)
             plot_with_sigma(
                 axs_pos[i], t, x_smooth, P_smooth, i,
                 label="Smoothed IMM", color="tab:orange",

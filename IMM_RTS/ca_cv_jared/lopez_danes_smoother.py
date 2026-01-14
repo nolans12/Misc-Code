@@ -82,8 +82,12 @@ def mode_interaction_preliminary(M, Pi, fwd, next_fwd, x_rts, P_rts):
 
     invertible = True
     for i in range(M):
-        if np.linalg.matrix_rank(back_info_matrices[i]) != back_info_matrices[i].shape[0]:
+        try:
+            if np.linalg.matrix_rank(back_info_matrices[i]) != back_info_matrices[i].shape[0]:
+                invertible = False
+        except Exception:
             invertible = False
+            break
 
     mu_mix, likelihoods = get_mixing_weights(Pi, back_info_matrices, back_info_vectors, x_hats, P_hats, invertible)
     return fwd_info_vectors, fwd_info_matrices, back_info_vectors, back_info_matrices, mu_mix, likelihoods, invertible
